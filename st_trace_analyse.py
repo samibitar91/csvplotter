@@ -5,7 +5,7 @@ from plotly.subplots import make_subplots
 from streamlit_plotly_events import plotly_events
 import plotly.express as px
 
-# Use the streamlit-sortables component for ordering the variable list
+# Try to import streamlit_sortables for drag-and-drop ordering (optional)
 try:
     import streamlit_sortables as st_sortables
 except ImportError:
@@ -34,40 +34,30 @@ def process_csv(df, time_col, measurement_col, output_col, quality_col, quality_
 
     return df
 
-def calculate_intersections(df, time_col, line1_x, line2_x, selected_columns):
-    """Calculate the intersections (closest y values) for X cursors."""
-    intersections = {}
-    for col in selected_columns:
-        closest_line1_idx = (df[time_col] - line1_x).abs().idxmin()
-        closest_line2_idx = (df[time_col] - line2_x).abs().idxmin()
-        val1 = df.at[closest_line1_idx, col]
-        val2 = df.at[closest_line2_idx, col]
-        diff = abs(val2 - val1)
-        intersections[col] = {"val1": val1, "val2": val2, "diff": diff}
-    return intersections
-
-def plot_subplots(df, sel_time_col, x_range_min, x_range_max, theme, draw_lines,
+def plot_subplots(df, sel_time_col, x_range_min, x_range_max, y_range_min, y_range_max,
+                  measurement_col, theme, draw_lines,
                   line1_x, line2_x, plot_columns, line_y1=None, line_y2=None):
     """
-    Create subplots for each selected variable. X cursors are drawn on all plots,
-    while Y cursors are drawn only for non-binary variables.
+    Create subplots for each selected variable.
+      - All variables are filtered by the selected x-range.
+      - Non-binary variables are further filtered by the y-range.
+      - Binary variables are only filtered by x-range.
     """
-    # Filter the dataframe by the selected x-range
-    df_filtered = df[(df[sel_time_col] >= x_range_min) & (df[sel_time_col] <= x_range_max)]
-    
-    # Determine subplot height: 100 pixels for binary, 200 for analogue variables
+    # Determine subplot heights based on variable type:
     pixel_heights = []
     for col in plot_columns:
-        unique_vals = df_filtered[col].dropna().unique()
+        df_filtered_x = df[(df[sel_time_col] >= x_range_min) & (df[sel_time_col] <= x_range_max)]
+        unique_vals = df_filtered_x[col].dropna().unique()
         pixel_heights.append(100 if len(unique_vals) == 2 else 500)
     total_height = sum(pixel_heights)
     row_heights = [h / total_height for h in pixel_heights]
 
+    # Colors for cursors
     X1_COLOR = "#007FFF"  # Electric Blue
     X2_COLOR = "#FFD700"  # Gold
     Y1_COLOR = "#FF00FF"  # Magenta
     Y2_COLOR = "#00FFFF"  # Cyan
-    
+
     # Create subplots
     fig = make_subplots(
         rows=len(plot_columns),
@@ -78,16 +68,21 @@ def plot_subplots(df, sel_time_col, x_range_min, x_range_max, theme, draw_lines,
 
     colors = px.colors.qualitative.Set1
 
-    # Calculate intersections for X cursors if enabled
-    if draw_lines:
-        intersections = calculate_intersections(df_filtered, sel_time_col, line1_x, line2_x, plot_columns)
-
     for idx, col in enumerate(plot_columns):
-        # Add the main trace for the variable
+        # First, filter by x-range only
+        df_filtered_x = df[(df[sel_time_col] >= x_range_min) & (df[sel_time_col] <= x_range_max)]
+        unique_vals = df_filtered_x[col].dropna().unique()
+        # For non-binary variables, further filter by the y-range
+        if len(unique_vals) != 2:
+            df_filtered_var = df_filtered_x[(df_filtered_x[col] >= y_range_min) & (df_filtered_x[col] <= y_range_max)]
+        else:
+            df_filtered_var = df_filtered_x
+
+        # Add main trace for the variable using its filtered data.
         fig.add_trace(
             go.Scatter(
-                x=df_filtered[sel_time_col],
-                y=df_filtered[col],
+                x=df_filtered_var[sel_time_col],
+                y=df_filtered_var[col],
                 mode="lines",
                 name=col,
                 line=dict(color=colors[idx % len(colors)]),
@@ -96,16 +91,21 @@ def plot_subplots(df, sel_time_col, x_range_min, x_range_max, theme, draw_lines,
             col=1,
         )
 
-        # Draw vertical X cursors and markers if enabled
-        if draw_lines and col in intersections:
+        # Draw X cursors and markers if enabled.
+        if draw_lines and not df_filtered_var.empty:
+            closest_line1_idx = (df_filtered_var[sel_time_col] - line1_x).abs().idxmin()
+            closest_line2_idx = (df_filtered_var[sel_time_col] - line2_x).abs().idxmin()
+            val1 = df_filtered_var.at[closest_line1_idx, col]
+            val2 = df_filtered_var.at[closest_line2_idx, col]
+
             # Vertical line at X1
             fig.add_shape(
                 dict(
                     type="line",
                     x0=line1_x,
                     x1=line1_x,
-                    y0=df_filtered[col].min(),
-                    y1=df_filtered[col].max(),
+                    y0=df_filtered_var[col].min(),
+                    y1=df_filtered_var[col].max(),
                     line=dict(color=X1_COLOR, width=2, dash="dot"),
                 ),
                 row=idx + 1,
@@ -117,8 +117,8 @@ def plot_subplots(df, sel_time_col, x_range_min, x_range_max, theme, draw_lines,
                     type="line",
                     x0=line2_x,
                     x1=line2_x,
-                    y0=df_filtered[col].min(),
-                    y1=df_filtered[col].max(),
+                    y0=df_filtered_var[col].min(),
+                    y1=df_filtered_var[col].max(),
                     line=dict(color=X2_COLOR, width=2, dash="dot"),
                 ),
                 row=idx + 1,
@@ -128,11 +128,11 @@ def plot_subplots(df, sel_time_col, x_range_min, x_range_max, theme, draw_lines,
             fig.add_trace(
                 go.Scatter(
                     x=[line1_x],
-                    y=[intersections[col]["val1"]],
+                    y=[val1],
                     mode="markers",
                     name=f'{col} X1',
                     marker=dict(size=8, color=X1_COLOR),
-                    hovertemplate=f"X1: x={line1_x:.2f}, y={intersections[col]['val1']:.2f}",
+                    hovertemplate=f"X1: x={line1_x:.2f}, y={val1:.2f}",
                 ),
                 row=idx + 1,
                 col=1,
@@ -141,27 +141,26 @@ def plot_subplots(df, sel_time_col, x_range_min, x_range_max, theme, draw_lines,
             fig.add_trace(
                 go.Scatter(
                     x=[line2_x],
-                    y=[intersections[col]["val2"]],
+                    y=[val2],
                     mode="markers",
                     name=f'{col} X2',
                     marker=dict(size=8, color=X2_COLOR),
-                    hovertemplate=f"X2: x={line2_x:.2f}, y={intersections[col]['val2']:.2f}",
+                    hovertemplate=f"X2: x={line2_x:.2f}, y={val2:.2f}",
                 ),
                 row=idx + 1,
                 col=1,
             )
 
-        # Draw Y cursors only on non-binary variables
-        unique_vals = df_filtered[col].dropna().unique()
+        # For non-binary variables, draw Y cursors if specified.
         if len(unique_vals) != 2:
             if line_y1 is not None:
-                closest_idx_y1 = (df_filtered[col] - line_y1).abs().idxmin()
-                x_intersect_y1 = df_filtered.at[closest_idx_y1, sel_time_col]
+                closest_idx_y1 = (df_filtered_var[col] - line_y1).abs().idxmin()
+                x_intersect_y1 = df_filtered_var.at[closest_idx_y1, sel_time_col]
                 fig.add_shape(
                     dict(
                         type="line",
-                        x0=df_filtered[sel_time_col].min(),
-                        x1=df_filtered[sel_time_col].max(),
+                        x0=df_filtered_var[sel_time_col].min(),
+                        x1=df_filtered_var[sel_time_col].max(),
                         y0=line_y1,
                         y1=line_y1,
                         line=dict(color=Y1_COLOR, width=2, dash="dot"),
@@ -182,13 +181,13 @@ def plot_subplots(df, sel_time_col, x_range_min, x_range_max, theme, draw_lines,
                     col=1,
                 )
             if line_y2 is not None:
-                closest_idx_y2 = (df_filtered[col] - line_y2).abs().idxmin()
-                x_intersect_y2 = df_filtered.at[closest_idx_y2, sel_time_col]
+                closest_idx_y2 = (df_filtered_var[col] - line_y2).abs().idxmin()
+                x_intersect_y2 = df_filtered_var.at[closest_idx_y2, sel_time_col]
                 fig.add_shape(
                     dict(
                         type="line",
-                        x0=df_filtered[sel_time_col].min(),
-                        x1=df_filtered[sel_time_col].max(),
+                        x0=df_filtered_var[sel_time_col].min(),
+                        x1=df_filtered_var[sel_time_col].max(),
                         y0=line_y2,
                         y1=line_y2,
                         line=dict(color=Y2_COLOR, width=2, dash="dot"),
@@ -209,7 +208,7 @@ def plot_subplots(df, sel_time_col, x_range_min, x_range_max, theme, draw_lines,
                     col=1,
                 )
 
-        # Update axes labels and fonts
+        # Update subplot axes labels and fonts.
         fig.update_yaxes(
             showticklabels=True,
             title_text=col,
@@ -227,7 +226,7 @@ def plot_subplots(df, sel_time_col, x_range_min, x_range_max, theme, draw_lines,
 
     fig.update_layout(
         height=total_height,
-        uirevision='constant',  # Add this line to preserve zoom state
+        uirevision='constant',  # Preserves zoom state
         **theme,
         dragmode="select",
         title="Subplots of Zoomed Area"
@@ -237,9 +236,10 @@ def plot_subplots(df, sel_time_col, x_range_min, x_range_max, theme, draw_lines,
 
 # ----------------------- Main Streamlit UI -----------------------
 
-# Create two columns: left for controls and cursor info, right for plots and slider controls.
+# Create two columns: col1 for controls (and later sliders) and col2 for plots.
 col1, col2 = st.columns([1, 3])
 
+# ----------------- COL1: Settings & Controls -----------------
 with col1:
     st.subheader("Settings & Controls")
     csv_file = st.file_uploader("Upload a CSV file", type=["csv"])
@@ -288,37 +288,36 @@ with col1:
         draw_lines_toggle = st.checkbox("Show X Cursor", value=True)
         show_y_cursor = st.checkbox("Show Y Cursor", value=True)
 
-        # ----- Toggle & Order Variables to Plot -----
+        # Toggle & Order Variables to Plot
         all_columns = [col for col in df.columns if col != selected_Time_column]
         default_vars = [measurement_col, output_col, quality_col]
         selected_plot_vars = st.multiselect("Select Variables to Plot", options=all_columns, default=default_vars)
-
         if not selected_plot_vars:
             st.error("Please select at least one variable to plot.")
             st.stop()
 
-        # Use streamlit-sortables for drag-and-drop ordering (if available)
         if st_sortables is not None:
             ordered_plot_vars = st_sortables.sort_items(selected_plot_vars)
         else:
             ordered_plot_vars = selected_plot_vars
 
-        # Process the CSV based on selections
+        # Process CSV data
         processed_df = process_csv(df, selected_Time_column, measurement_col, output_col, quality_col, quality_threshold)
 
-        
+        # For Y cursor slider controls, choose non-binary variables.
         non_binary_vars = [var for var in ordered_plot_vars if processed_df[var].dropna().nunique() != 2]
         if show_y_cursor and non_binary_vars:
             default_y_var = measurement_col if measurement_col in non_binary_vars else non_binary_vars[0]
             y_range_var = st.selectbox("Select Variable for Y Cursor", options=non_binary_vars,
-                                       index=non_binary_vars.index(default_y_var))        
+                                       index=non_binary_vars.index(default_y_var))
+        # Placeholders for slider controls and cursor info (will be updated later)
+        slider_placeholder = st.empty()
+        # cursor_info_placeholder = st.empty()
 
-        # In col1 we reserve a placeholder to later display the cursor values.
-        cursor_info_placeholder = st.empty()
-        # (The cursor values will appear in the order: X1, X2, ΔX, Y1, Y2, ΔY)
-
-with col2:
-    if csv_file:
+# ----------------- COL2: Main Plot and Subplots -----------------
+computed_ranges = {}
+if csv_file:
+    with col2:
         st.subheader("Read CSV")
         st.dataframe(processed_df, height=200)
 
@@ -336,6 +335,8 @@ with col2:
             **theme_settings,
             xaxis=dict(title=selected_Time_column),
         )
+
+        # Capture box-select events (this call both displays the figure and returns event data)
         event_data = plotly_events(
             main_fig,
             click_event=False,
@@ -343,7 +344,7 @@ with col2:
             select_event=True,
         )
 
-        # Determine x-range from selection events (or use full range)
+        # Determine x-range and y-range from the event data (using curveNumber for measurement variable)
         if event_data:
             selected_x = [point["x"] for point in event_data]
             unique_selected_x = sorted(set(selected_x))
@@ -353,11 +354,39 @@ with col2:
             else:
                 x_range_min = processed_df[selected_Time_column].min()
                 x_range_max = processed_df[selected_Time_column].max()
+
+            measurement_idx = ordered_plot_vars.index(measurement_col)
+            selected_y = [point["y"] for point in event_data if point.get("curveNumber") == measurement_idx]
+            if selected_y:
+                y_range_min = min(selected_y)
+                y_range_max = max(selected_y)
+            else:
+                y_range_min = processed_df[measurement_col].min()
+                y_range_max = processed_df[measurement_col].max()
         else:
             x_range_min = processed_df[selected_Time_column].min()
             x_range_max = processed_df[selected_Time_column].max()
+            y_range_min = processed_df[measurement_col].min()
+            y_range_max = processed_df[measurement_col].max()
 
-        # X cursor sliders (using float values formatted to 5 decimal places)
+        computed_ranges = {
+            "x_range_min": x_range_min,
+            "x_range_max": x_range_max,
+            "y_range_min": y_range_min,
+            "y_range_max": y_range_max,
+        }
+
+
+# ----------------- COL1 (Below Settings): Slider Controls -----------------
+# Now that the main figure has been rendered and ranges computed, add the slider controls below the controls in col1.
+if csv_file and computed_ranges:
+    with col1:
+        st.subheader("Cursor Sliders")
+        x_range_min = computed_ranges["x_range_min"]
+        x_range_max = computed_ranges["x_range_max"]
+        y_range_min = computed_ranges["y_range_min"]
+        y_range_max = computed_ranges["y_range_max"]
+
         line1_x_slider = st.slider(
             "Position Cursor X1",
             min_value=float(x_range_min),
@@ -370,8 +399,6 @@ with col2:
             max_value=float(x_range_max),
             value=float(x_range_max)
         )
-
-        # Y cursor sliders 
         if show_y_cursor and non_binary_vars:
             y_min = float(processed_df[y_range_var].min())
             y_max = float(processed_df[y_range_var].max())
@@ -390,28 +417,30 @@ with col2:
         else:
             line_y1_slider, line_y2_slider = None, None
 
-        # Compute cursor deltas
-        delta_x = line2_x_slider - line1_x_slider
-        if line_y1_slider is not None and line_y2_slider is not None:
-            delta_y = line_y2_slider - line_y1_slider
-        else:
-            delta_y = None
+        # # Compute cursor deltas and update cursor info placeholder
+        # delta_x = line2_x_slider - line1_x_slider
+        # if line_y1_slider is not None and line_y2_slider is not None:
+        #     delta_y = line_y2_slider - line_y1_slider
+        # else:
+        #     delta_y = None
 
-        # Update the left-column placeholder with cursor values (ordered as X1, X2, ΔX, Y1, Y2, ΔY)
-        display_str = f"**X1:** {line1_x_slider} &nbsp;&nbsp; **X2:** {line2_x_slider} &nbsp;&nbsp; **ΔX:** {delta_x}"
-        if line_y1_slider is not None and line_y2_slider is not None:
-            display_str += f" &nbsp;&nbsp; **Y1:** {line_y1_slider} &nbsp;&nbsp; **Y2:** {line_y2_slider} &nbsp;&nbsp; **ΔY:** {delta_y}"
-        else:
-            display_str += " &nbsp;&nbsp; **Y1:** N/A &nbsp;&nbsp; **Y2:** N/A &nbsp;&nbsp; **ΔY:** N/A"
-        cursor_info_placeholder.markdown(display_str)
+        # cursor_info_placeholder.markdown(
+        #     f"**X1:** {line1_x_slider} &nbsp;&nbsp; **X2:** {line2_x_slider} &nbsp;&nbsp; **ΔX:** {delta_x}" +
+        #     (f" &nbsp;&nbsp; **Y1:** {line_y1_slider} &nbsp;&nbsp; **Y2:** {line_y2_slider} &nbsp;&nbsp; **ΔY:** {delta_y}" if delta_y is not None else " &nbsp;&nbsp; **Y1:** N/A &nbsp;&nbsp; **Y2:** N/A &nbsp;&nbsp; **ΔY:** N/A")
+        # )
 
-        # Finally, display the subplots with the selected cursors
+# ----------------- COL2: Display Subplots -----------------
+if csv_file and computed_ranges:
+    with col2:
         st.plotly_chart(
             plot_subplots(
                 processed_df,
                 selected_Time_column,
-                x_range_min,
-                x_range_max,
+                computed_ranges["x_range_min"],
+                computed_ranges["x_range_max"],
+                computed_ranges["y_range_min"],
+                computed_ranges["y_range_max"],
+                measurement_col,
                 theme_settings,
                 draw_lines_toggle,
                 line1_x_slider,
@@ -421,4 +450,17 @@ with col2:
                 line_y2=line_y2_slider,
             ),
             use_container_width=True,
+        )
+
+        # Compute cursor deltas and update cursor info placeholder
+        delta_x = round(line2_x_slider - line1_x_slider, 2)
+        if line_y1_slider is not None and line_y2_slider is not None:
+            delta_y = round(line_y2_slider - line_y1_slider, 2)
+        else:
+            delta_y = None
+
+        cursor_info_placeholder = st.empty()
+        cursor_info_placeholder.markdown(
+            f"**X1:** {line1_x_slider} &nbsp;&nbsp; **X2:** {line2_x_slider} &nbsp;&nbsp; **ΔX:** {delta_x}" +
+            (f" &nbsp;&nbsp; **Y1:** {line_y1_slider} &nbsp;&nbsp; **Y2:** {line_y2_slider} &nbsp;&nbsp; **ΔY:** {delta_y}" if delta_y is not None else " &nbsp;&nbsp; **Y1:** N/A &nbsp;&nbsp; **Y2:** N/A &nbsp;&nbsp; **ΔY:** N/A")
         )
